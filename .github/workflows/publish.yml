@@ -151,15 +151,17 @@ jobs:
         run: |
           set -euo pipefail
           V="${{ inputs.version }}"
+          # ${extra[@]+...}: macOS ships bash 3.2, where an empty array is an
+          # unbound variable under set -u; the pypi target leaves it empty.
           extra=()
           if [[ "${{ inputs.target }}" == testpypi ]]; then extra=(--index-url https://test.pypi.org/simple/); fi
           # The index catches up within minutes; retry for about five.
           for i in $(seq 1 30); do
-            if out="$(uvx --refresh "${extra[@]}" "openinfer-cli==$V" --version 2>&1)"; then break; fi
+            if out="$(uvx --refresh ${extra[@]+"${extra[@]}"} "openinfer-cli==$V" --version 2>&1)"; then break; fi
             sleep 10
           done
           echo "$out"; [[ "$out" == *"$V"* ]]
-          out2="$(uvx --refresh "${extra[@]}" --from "openinfer-cli==$V" oi --version)"
+          out2="$(uvx --refresh ${extra[@]+"${extra[@]}"} --from "openinfer-cli==$V" oi --version)"
           echo "$out2"; [[ "$out2" == *"$V"* ]]
 
       - name: brew (Linux and macOS, pypi only)
