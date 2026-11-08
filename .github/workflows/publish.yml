@@ -1,0 +1,223 @@
+# Publish a release of oi that a draft Release here already holds.
+#
+# This repository holds release binaries and this one workflow; it builds
+# nothing. A person runs it after inspecting the draft: with target testpypi
+# it uploads the wheels to TestPyPI and stops (the Release stays a draft, the
+# tap is untouched); with target pypi it uploads to PyPI, publishes the
+# Release, and bumps the Homebrew formula and Scoop manifest in the tap.
+# Every step is idempotent, so a re-run after a partial publish finishes the
+# rest: PyPI skips files it already has, publishing a published Release is a
+# no-op, and the tap bump exits early when it is already at the version.
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The version to publish (x.y.z; x.y.z.devN is accepted for testpypi only)."
+        type: string
+        required: true
+      target:
+        description: "Where the wheels go."
+        type: choice
+        options: [testpypi, pypi]
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish ${{ inputs.version }} to ${{ inputs.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: ${{ inputs.target }}
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      # The version is an input, not a fact: a dev draft must never reach PyPI.
+      # It reaches the shell only as a quoted variable: interpolated into the
+      # script text, a crafted value would run as code in a job that can mint
+      # the PyPI token, before the guard saw it.
+      - name: Version guard
+        env:
+          VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
+        run: python scripts/check_publish_version.py --version "$VERSION" --target "$TARGET"
+
+      - name: Download the wheels and SHA256SUMS from the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          gh release download "v$VERSION" --repo "${{ github.repository }}" \
+            --pattern '*.whl' --pattern SHA256SUMS --dir dist
+          # Out of dist/ at once: the publish action uploads everything in dist/,
+          # and the tap bump below reads ./SHA256SUMS from this same job.
+          mv -f dist/SHA256SUMS SHA256SUMS
+
+      - name: Check the wheels
+        run: |
+          set -euo pipefail
+          # Only the wheel lines: SHA256SUMS also lists the archives, which are
+          # not downloaded here.
+          grep '\.whl$' SHA256SUMS | (cd dist && sha256sum -c -)
+          n="$(ls dist/*.whl | wc -l)"
+          [[ "$n" -eq 5 ]] || { echo "::error::expected 5 wheels, found $n"; exit 1; }
+          ls -la dist
+
+      - name: Upload the wheels
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+          repository-url: ${{ inputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || '' }}
+          skip-existing: true
+          # This repository re-uploads what the build produced elsewhere; an
+          # attestation would claim it built them.
+          attestations: false
+
+      - name: Publish the Release
+        if: inputs.target == 'pypi'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: gh release edit "v$VERSION" --repo "${{ github.repository }}" --draft=false
+
+      # After the Release is public: a draft's assets return 404 to everyone
+      # else, so a tap bumped earlier would break brew and scoop installs.
+      - name: Mint a token for the tap
+        if: inputs.target == 'pypi'
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.TAP_APP_ID }}
+          private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
+          owner: open-infer
+          repositories: homebrew-tap
+
+      - name: Bump the tap
+        if: inputs.target == 'pypi'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/open-infer/homebrew-tap" tap
+          python scripts/bump_tap.py --version "$VERSION" --sums SHA256SUMS --tap tap
+          cd tap
+          # Stage first: on the first publish the tap has no Formula/oi.rb or
+          # bucket/oi.json yet, and `git diff --quiet` ignores untracked files,
+          # so only the index says whether there is anything to commit.
+          git add Formula/oi.rb bucket/oi.json
+          if git diff --cached --quiet; then echo "tap already at $VERSION"; exit 0; fi
+          bot_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git commit -q -m "oi $VERSION"
+          git push origin HEAD:main
+
+  smoke:
+    name: smoke ${{ matrix.runs_on }}
+    needs: [publish]
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs_on: ubuntu-24.04
+          - runs_on: ubuntu-24.04-arm
+          - runs_on: macos-15
+          - runs_on: macos-15-intel
+          - runs_on: windows-2022
+    steps:
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: uvx from the index
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ inputs.version }}"
+          extra=()
+          if [[ "${{ inputs.target }}" == testpypi ]]; then extra=(--index-url https://test.pypi.org/simple/); fi
+          # The index catches up within minutes; retry for about five.
+          for i in $(seq 1 30); do
+            if out="$(uvx --refresh "${extra[@]}" "openinfer-cli==$V" --version 2>&1)"; then break; fi
+            sleep 10
+          done
+          echo "$out"; [[ "$out" == *"$V"* ]]
+          out2="$(uvx --refresh "${extra[@]}" --from "openinfer-cli==$V" oi --version)"
+          echo "$out2"; [[ "$out2" == *"$V"* ]]
+
+      - name: brew (Linux and macOS, pypi only)
+        if: inputs.target == 'pypi' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v brew >/dev/null && [[ "$(uname)" == Linux ]]; then
+            NONINTERACTIVE=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          fi
+          if [[ "$(uname)" == Linux ]]; then eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"; fi
+          brew install open-infer/tap/oi
+          out="$(oi --version)"; echo "$out"; [[ "$out" == *"${{ inputs.version }}"* ]]
+
+      - name: scoop (Windows, pypi only)
+        if: inputs.target == 'pypi' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+          irm get.scoop.sh -outfile install.ps1
+          .\install.ps1 -RunAsAdmin
+          $env:PATH = "$env:USERPROFILE\scoop\shims;$env:PATH"
+          scoop bucket add openinfer https://github.com/open-infer/homebrew-tap
+          scoop install oi
+          $out = oi --version
+          Write-Host $out
+          if ($out -notlike "*${{ inputs.version }}*") { throw "oi --version printed $out" }
+
+      # WSL takes the Linux wheel. setup-uv on the Windows runner installs the
+      # Windows uv.exe, which inside WSL would fetch the Windows wheel; Linux uv
+      # is installed inside the distro instead. `wsl -- <path>` runs no POSIX
+      # shell, so every command goes through sh -c, in single quotes so
+      # PowerShell leaves $HOME alone.
+      - name: WSL distro (Windows)
+        if: runner.os == 'Windows'
+        uses: Vampire/setup-wsl@4c48163d9f981914dd8caa0fc335fe19cca5bff4 # v7.2.0
+        with:
+          distribution: Ubuntu-22.04
+          wsl-version: 2
+          additional-packages: curl ca-certificates
+      - name: Install Linux uv inside WSL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: wsl -- sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+      - name: uvx and uv tool install inside WSL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $V = "${{ inputs.version }}"
+          $idx = if ("${{ inputs.target }}" -eq "testpypi") { "--index-url https://test.pypi.org/simple/" } else { "" }
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            $out = wsl -- sh -c "`$HOME/.local/bin/uvx --refresh $idx openinfer-cli==$V --version 2>&1"
+            if ($LASTEXITCODE -eq 0 -and "$out" -like "*$V*") { $ok = $true; break }
+            Start-Sleep -Seconds 10
+          }
+          if (-not $ok) { throw "uvx inside WSL never printed $V : $out" }
+          wsl -- sh -c "`$HOME/.local/bin/uv tool install --refresh $idx openinfer-cli==$V"
+          wsl -- sh -c "grep -qx 'Tag: py3-none-manylinux_2_28_x86_64' `"`$(`$HOME/.local/bin/uv tool dir)`"/openinfer-cli/lib/python*/site-packages/openinfer_cli-$V.dist-info/WHEEL"
+          if ($LASTEXITCODE -ne 0) { throw "the wheel installed inside WSL is not the manylinux_2_28_x86_64 one" }
+          wsl -- sh -c "`$HOME/.local/bin/uv tool uninstall openinfer-cli"

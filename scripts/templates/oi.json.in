@@ -1,0 +1,26 @@
+{
+    "version": "{version}",
+    "description": "Point your coding harness (Claude Code, agy, pi, omp, opencode, kilo) at OpenInfer",
+    "homepage": "https://github.com/open-infer/oi",
+    "license": {
+        "identifier": "Proprietary",
+        "url": "https://github.com/open-infer/oi/blob/main/LICENSE"
+    },
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/open-infer/oi/releases/download/v{version}/oi-{version}-windows-x86_64.zip",
+            "hash": "{sha256_windows_x64}"
+        }
+    },
+    "bin": "oi.exe",
+    "checkver": {
+        "github": "https://github.com/open-infer/oi"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/open-infer/oi/releases/download/v$version/oi-$version-windows-x86_64.zip"
+            }
+        }
+    }
+}

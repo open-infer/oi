@@ -1,0 +1,42 @@
+# Rendered by scripts/bump_tap.py from templates/oi.rb.in; do not edit by hand.
+class Oi < Formula
+  desc "Point your coding harness (Claude Code, agy, pi, omp, opencode, kilo) at OpenInfer"
+  homepage "https://github.com/open-infer/oi"
+  version "{version}"
+  license :cannot_represent
+
+  on_macos do
+    on_arm do
+      url "https://github.com/open-infer/oi/releases/download/v{version}/oi-{version}-macos-arm64.tar.gz"
+      sha256 "{sha256_macos_arm64}"
+    end
+    on_intel do
+      url "https://github.com/open-infer/oi/releases/download/v{version}/oi-{version}-macos-x86_64.tar.gz"
+      sha256 "{sha256_macos_x86_64}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/open-infer/oi/releases/download/v{version}/oi-{version}-linux-aarch64.tar.gz"
+      sha256 "{sha256_linux_aarch64}"
+    end
+    on_intel do
+      url "https://github.com/open-infer/oi/releases/download/v{version}/oi-{version}-linux-x86_64.tar.gz"
+      sha256 "{sha256_linux_x86_64}"
+    end
+  end
+
+  def install
+    # The tarball's single top-level oi.dist/ is stripped by Homebrew, so the
+    # standalone build lands in libexec with the executable beside its
+    # libraries; the symlink is the binary itself, which finds them through
+    # its own resolved path. No launcher.
+    libexec.install Dir["*"]
+    bin.install_symlink libexec/"oi"
+  end
+
+  test do
+    system bin/"oi", "--version"
+  end
+end
