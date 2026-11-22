@@ -1,6 +1,6 @@
 {
     "version": "{version}",
-    "description": "Point your coding harness (Claude Code, agy, pi, omp, opencode, kilo) at OpenInfer",
+    "description": "Point your coding harness (Claude Code, agy, pi, omp, opencode, kilo, codex) at OpenInfer",
     "homepage": "https://github.com/open-infer/oi",
     "license": {
         "identifier": "Proprietary",

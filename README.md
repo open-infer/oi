@@ -79,7 +79,7 @@ uvx --from openinfer-cli oi claude   # the same, naming the command
 oi <harness> -- <harness args>       # everything after -- reaches the harness
 ```
 
-The six aliases are `claude`, `agy`, `pi`, `omp`, `opencode` and `kilo`.
+The seven aliases are `claude`, `agy`, `pi`, `omp`, `opencode`, `kilo` and `codex`.
 
 ## Notes
 
@@ -96,7 +96,7 @@ live. Add to `~/.tmux.conf`:
 
 ```tmux
 set -g @resurrect-hook-post-save-layout 'oi tmux-resurrect-hook'
-set -g @resurrect-processes '"~^oi (claude|agy|pi|opencode|kilo) " "~(^|/)claude( |$)->claude --continue" "~(^|/)pi( |$)->pi --continue" "~(^|/)agy( |$)->agy --continue"'
+set -g @resurrect-processes '"~^oi (claude|agy|pi|opencode|kilo|codex) " "~(^|/)claude( |$)->claude --continue" "~(^|/)pi( |$)->pi --continue" "~(^|/)agy( |$)->agy --continue"'
 ```
 
 Anchor any rule you add on the program name (`~^oi `, `~(^|/)claude( |$)`):
